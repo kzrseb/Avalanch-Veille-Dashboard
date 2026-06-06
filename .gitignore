@@ -1,0 +1,15 @@
+# Données téléchargées et bases locales
+data/decp-latest.json
+data/*.duckdb.wal
+data/*.duckdb.tmp
+*.pyc
+__pycache__/
+
+# Secrets locaux
+.streamlit/secrets.toml
+.env
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,47 @@
+name: Mise à jour hebdomadaire DECP
+
+on:
+  schedule:
+    # Tous les dimanches à 21h00 UTC (= 22h00/23h00 heure de Paris selon DST)
+    - cron: "0 21 * * 0"
+  workflow_dispatch: {}   # bouton manuel "Run workflow" depuis l'UI GitHub
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run weekly job (download + ingest + enrich + alerts)
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_SENDER: ${{ secrets.RESEND_SENDER }}
+          VEILLE_DB: data/veille.duckdb
+        run: |
+          python -m src.weekly_job
+
+      - name: Commit updated database
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/veille.duckdb
+          if ! git diff --staged --quiet; then
+            git commit -m "weekly update $(date -u +%Y-%m-%d)"
+            git push
+          else
+            echo "Pas de changement à committer"
+          fi
