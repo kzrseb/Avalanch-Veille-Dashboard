@@ -6,6 +6,9 @@ on:
     - cron: "0 21 * * 0"
   workflow_dispatch: {}   # bouton manuel "Run workflow" depuis l'UI GitHub
 
+permissions:
+  contents: write   # nécessaire pour que github-actions[bot] puisse pusher le DB committé
+
 jobs:
   update:
     runs-on: ubuntu-latest
