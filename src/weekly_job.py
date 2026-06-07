@@ -34,14 +34,17 @@ def download_latest_decp():
     if not json_resources:
         raise RuntimeError("Aucune ressource JSON trouvée dans le dataset DECP")
 
-    # Préférer le fichier consolidé (> 100 Mo). Sinon, le plus récent JSON.
-    big = [x for x in json_resources if (x.get("filesize") or 0) > 100 * 1024 * 1024]
-    candidates = big if big else json_resources
-    candidates.sort(key=lambda x: x.get("last_modified", ""), reverse=True)
-    target = candidates[0]
+    # Diagnostic : top 10 plus gros
+    by_size = sorted(json_resources, key=lambda x: (x.get("filesize") or 0), reverse=True)
+    print(f"      {len(json_resources)} fichiers JSON dans le dataset. Top 10 :", flush=True)
+    for x in by_size[:10]:
+        s = (x.get("filesize") or 0) / 1e6
+        print(f"        {s:>7.1f} Mo · {(x.get('title') or '?')[:80]}", flush=True)
 
+    # On prend le PLUS GROS fichier (= le fichier consolidé exhaustif).
+    target = by_size[0]
     size_mo = (target.get("filesize") or 0) / 1e6
-    print(f"      → {target.get('title','?')} ({size_mo:.0f} Mo)", flush=True)
+    print(f"      → choisi : {target.get('title','?')} ({size_mo:.0f} Mo)", flush=True)
     url = target["url"]
     t0 = time.time()
     with requests.get(url, stream=True, timeout=600) as resp:
