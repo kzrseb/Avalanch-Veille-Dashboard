@@ -13,7 +13,7 @@ from . import ingest_decp, enrich_sirene, email_alerts
 
 
 DECP_DATASET_URL = (
-    "https://www.data.gouv.fr/api/2/datasets/donnees-essentielles-de-la-commande-publique-fichiers-consolides/"
+    "https://www.data.gouv.fr/api/1/datasets/donnees-essentielles-de-la-commande-publique-fichiers-consolides/"
 )
 DATA_DIR = Path("data")
 DECP_LOCAL = DATA_DIR / "decp-latest.json"
@@ -25,24 +25,26 @@ def download_latest_decp():
     r = requests.get(DECP_DATASET_URL, timeout=30)
     r.raise_for_status()
     ds = r.json()
-    resources = sorted(
-        [r for r in ds.get("resources", []) if r.get("format", "").lower() == "json"],
-        key=lambda r: r.get("last_modified", ""),
-        reverse=True,
-    )
-    if not resources:
-        raise RuntimeError("Aucune ressource JSON trouvée")
-    target = None
-    for r in resources:
-        size = r.get("filesize") or 0
-        if 0 < size <= 500 * 1024 * 1024:
-            target = r; break
-    target = target or resources[0]
 
-    print(f"      → {target.get('title','?')} ({target.get('filesize',0)/1e6:.0f} Mo)", flush=True)
+    raw_resources = ds.get("resources") or []
+    json_resources = [
+        x for x in raw_resources
+        if isinstance(x, dict) and (x.get("format") or "").lower() == "json"
+    ]
+    if not json_resources:
+        raise RuntimeError("Aucune ressource JSON trouvée dans le dataset DECP")
+
+    # Préférer le fichier consolidé (> 100 Mo). Sinon, le plus récent JSON.
+    big = [x for x in json_resources if (x.get("filesize") or 0) > 100 * 1024 * 1024]
+    candidates = big if big else json_resources
+    candidates.sort(key=lambda x: x.get("last_modified", ""), reverse=True)
+    target = candidates[0]
+
+    size_mo = (target.get("filesize") or 0) / 1e6
+    print(f"      → {target.get('title','?')} ({size_mo:.0f} Mo)", flush=True)
     url = target["url"]
     t0 = time.time()
-    with requests.get(url, stream=True, timeout=300) as resp:
+    with requests.get(url, stream=True, timeout=600) as resp:
         resp.raise_for_status()
         with DECP_LOCAL.open("wb") as fh:
             for chunk in resp.iter_content(chunk_size=1024 * 1024):
