@@ -34,14 +34,23 @@ def download_latest_decp():
     if not json_resources:
         raise RuntimeError("Aucune ressource JSON trouvée dans le dataset DECP")
 
-    # Diagnostic : top 10 plus gros
-    by_size = sorted(json_resources, key=lambda x: (x.get("filesize") or 0), reverse=True)
-    print(f"      {len(json_resources)} fichiers JSON dans le dataset. Top 10 :", flush=True)
+    # Filtrer le format OCDS (schéma différent, incompatible avec notre parser DECP standard).
+    def is_standard_decp(x):
+        title = (x.get("title") or "").lower()
+        return "ocds" not in title
+
+    standard = [x for x in json_resources if is_standard_decp(x)]
+    if not standard:
+        standard = json_resources
+
+    # Diagnostic : top 10 standard par taille
+    by_size = sorted(standard, key=lambda x: (x.get("filesize") or 0), reverse=True)
+    print(f"      {len(json_resources)} JSON ({len(standard)} format DECP standard). Top 10 standard :", flush=True)
     for x in by_size[:10]:
         s = (x.get("filesize") or 0) / 1e6
         print(f"        {s:>7.1f} Mo · {(x.get('title') or '?')[:80]}", flush=True)
 
-    # On prend le PLUS GROS fichier (= le fichier consolidé exhaustif).
+    # On prend le PLUS GROS fichier au format DECP standard (= le consolidé global).
     target = by_size[0]
     size_mo = (target.get("filesize") or 0) / 1e6
     print(f"      → choisi : {target.get('title','?')} ({size_mo:.0f} Mo)", flush=True)
