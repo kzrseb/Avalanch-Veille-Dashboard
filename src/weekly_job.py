@@ -78,10 +78,10 @@ def main() -> int:
     stats = ingest_decp.ingest(DECP_LOCAL)
     print(f"      {stats['kept']:,} marchés conservés en {stats['total_s']}s", flush=True)
 
-    print("[3/4] Enrichissement SIRENE (top 3000 acheteurs + 3000 titulaires)…", flush=True)
+    print("[3/4] Enrichissement SIRENE (top 15000 acheteurs + 15000 titulaires)…", flush=True)
     try:
         con = db_mod.connect()
-        es = enrich_sirene.enrich_top_actors(con, top_acheteurs=3000, top_titulaires=3000)
+        es = enrich_sirene.enrich_top_actors(con, top_acheteurs=15000, top_titulaires=15000)
         print(f"      {es['found']}/{es['requested']} SIRET enrichis", flush=True)
         con.close()
     except Exception as e:
