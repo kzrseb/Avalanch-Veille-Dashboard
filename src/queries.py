@@ -67,6 +67,12 @@ def _filter_clauses(f: dict | None, alias: str = "m") -> tuple[str, list]:
     if f.get("ending_within_days"):
         parts.append(f"{a}date_fin_estimee BETWEEN current_date "
                      "AND current_date + INTERVAL '%d days'" % int(f["ending_within_days"]))
+    if f.get("date_min"):
+        parts.append(f"{a}date_publication >= ?")
+        params.append(str(f["date_min"]))
+    if f.get("date_max"):
+        parts.append(f"{a}date_publication <= ?")
+        params.append(str(f["date_max"]))
 
     return " AND ".join(parts), params
 
@@ -117,17 +123,18 @@ def par_cpv4(con, filters: dict | None = None, limit: int = 50) -> pd.DataFrame:
 
 
 def top_acheteurs(con, filters: dict | None = None, limit: int = 50) -> pd.DataFrame:
+    """Version allégée : on ne JOIN PAS titulaires_marche pour éviter
+    l'explosion combinatoire sur 300k+ marchés × N titulaires chacun."""
     where, params = _filter_clauses(filters)
     return con.execute(f"""
         SELECT m.acheteur_id AS siret, {ACHETEUR_TYPE_SQL} AS type,
             COALESCE(e.nom, '(nom non enrichi)') AS nom,
-            count(*) AS nb_marches, sum(m.montant) AS montant_total,
+            count(*) AS nb_marches,
+            sum(m.montant) AS montant_total,
             avg(m.montant) AS montant_moyen,
             count(DISTINCT m.cpv_4) AS nb_cpv,
-            count(DISTINCT tm.titulaire_id) AS nb_titulaires,
             max(m.date_publication) AS dernier
         FROM marches m
-        LEFT JOIN titulaires_marche tm ON tm.marche_id = m.id
         LEFT JOIN entreprises e ON e.siret = m.acheteur_id
         WHERE {where} AND m.acheteur_id IS NOT NULL
         GROUP BY m.acheteur_id, type, e.nom

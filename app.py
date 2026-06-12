@@ -113,6 +113,14 @@ mt_max = st.sidebar.number_input("Montant max (€)", value=0, step=10000,
 
 active_only = st.sidebar.checkbox("Uniquement marchés en cours")
 
+# Sélecteur de période (date de publication)
+from datetime import date as _date, timedelta as _td
+default_min = _date.today() - _td(days=365)
+default_max = _date.today()
+st.sidebar.markdown("**Période de publication**")
+date_min = st.sidebar.date_input("Du", value=default_min, key="date_min")
+date_max = st.sidebar.date_input("Au", value=default_max, key="date_max")
+
 filters = {
     "cpv_2": cpv2, "cpv_4": cpv4, "keyword": keyword.strip() or None,
     "departement": dep, "type_acheteur": type_acheteur,
@@ -120,6 +128,7 @@ filters = {
     "min_montant": mt_min if mt_min > 0 else None,
     "max_montant": mt_max if mt_max > 0 else None,
     "active_only": active_only,
+    "date_min": date_min, "date_max": date_max,
 }
 
 st.sidebar.markdown("---")
@@ -239,52 +248,61 @@ with tabs[1]:
 
 with tabs[2]:
     st.markdown("### Top 50 acheteurs (filtrés)")
-    df = q.top_acheteurs(con, filters, limit=50)
-    if df.empty:
-        st.info("Aucun acheteur ne correspond aux filtres.")
-    else:
-        df["Montant total"] = df["montant_total"].apply(fmt_eur)
-        df["Montant moyen"] = df["montant_moyen"].apply(fmt_eur)
-        show = ["siret", "nom", "type", "nb_marches", "Montant total",
-                "Montant moyen", "nb_cpv", "nb_titulaires", "dernier"]
-        st.dataframe(df[show].rename(columns={
-            "siret":"SIRET","nom":"Nom","type":"Type",
-            "nb_marches":"Marchés","nb_cpv":"Secteurs CPV",
-            "nb_titulaires":"Titulaires distincts","dernier":"Dernier marché",
-        }), width="stretch", hide_index=True)
+    try:
+        df = q.top_acheteurs(con, filters, limit=50)
+        if df.empty:
+            st.info("Aucun acheteur ne correspond aux filtres.")
+        else:
+            df["Montant total"] = df["montant_total"].apply(fmt_eur)
+            df["Montant moyen"] = df["montant_moyen"].apply(fmt_eur)
+            show = ["siret", "nom", "type", "nb_marches", "Montant total",
+                    "Montant moyen", "nb_cpv", "dernier"]
+            st.dataframe(df[show].rename(columns={
+                "siret":"SIRET","nom":"Nom","type":"Type",
+                "nb_marches":"Marchés","nb_cpv":"Secteurs CPV",
+                "dernier":"Dernier marché",
+            }), width="stretch", hide_index=True)
+    except Exception as e:
+        st.error(f"Erreur sur l'onglet Acheteurs : {e}")
 
 
 with tabs[3]:
     st.markdown("### Top 50 titulaires (gagnants)")
-    df = q.top_titulaires(con, filters, limit=50)
-    if df.empty:
-        st.info("Aucun titulaire ne correspond aux filtres.")
-    else:
-        df["Montant total gagné"] = df["montant_total"].apply(fmt_eur)
-        show = ["siret", "nom", "categorie", "nb_marches_gagnes",
-                "Montant total gagné", "nb_acheteurs", "nb_cpv"]
-        st.dataframe(df[show].rename(columns={
-            "siret":"SIRET","nom":"Nom","categorie":"Catégorie",
-            "nb_marches_gagnes":"Marchés gagnés",
-            "nb_acheteurs":"Acheteurs distincts","nb_cpv":"Secteurs CPV",
-        }), width="stretch", hide_index=True)
+    try:
+        df = q.top_titulaires(con, filters, limit=50)
+        if df.empty:
+            st.info("Aucun titulaire ne correspond aux filtres.")
+        else:
+            df["Montant total gagné"] = df["montant_total"].apply(fmt_eur)
+            show = ["siret", "nom", "categorie", "nb_marches_gagnes",
+                    "Montant total gagné", "nb_acheteurs", "nb_cpv"]
+            st.dataframe(df[show].rename(columns={
+                "siret":"SIRET","nom":"Nom","categorie":"Catégorie",
+                "nb_marches_gagnes":"Marchés gagnés",
+                "nb_acheteurs":"Acheteurs distincts","nb_cpv":"Secteurs CPV",
+            }), width="stretch", hide_index=True)
+    except Exception as e:
+        st.error(f"Erreur sur l'onglet Titulaires : {e}")
 
 
 with tabs[4]:
-    days = st.slider("Fenêtre d'échéance (jours)", 30, 365, 183, step=30)
-    df = q.echeances(con, filters, days=days, limit=500)
-    st.markdown(f"### {len(df)} marchés finissent dans les {days} prochains jours")
-    if df.empty:
-        st.info("Aucun marché ne finit dans cette fenêtre.")
-    else:
-        df["Montant"] = df["montant"].apply(fmt_eur)
-        show = ["fin", "cpv_4", "cpv_libelle", "objet",
-                "acheteur_nom", "acheteur_type", "departement", "Montant"]
-        st.dataframe(df[show].rename(columns={
-            "fin":"Fin estimée","cpv_4":"CPV","cpv_libelle":"Secteur",
-            "objet":"Objet","acheteur_nom":"Acheteur",
-            "acheteur_type":"Type","departement":"Dép.",
-        }), width="stretch", hide_index=True)
+    try:
+        days = st.slider("Fenêtre d'échéance (jours)", 30, 365, 183, step=30)
+        df = q.echeances(con, filters, days=days, limit=500)
+        st.markdown(f"### {len(df)} marchés finissent dans les {days} prochains jours")
+        if df.empty:
+            st.info("Aucun marché ne finit dans cette fenêtre.")
+        else:
+            df["Montant"] = df["montant"].apply(fmt_eur)
+            show = ["fin", "cpv_4", "cpv_libelle", "objet",
+                    "acheteur_nom", "acheteur_type", "departement", "Montant"]
+            st.dataframe(df[show].rename(columns={
+                "fin":"Fin estimée","cpv_4":"CPV","cpv_libelle":"Secteur",
+                "objet":"Objet","acheteur_nom":"Acheteur",
+                "acheteur_type":"Type","departement":"Dép.",
+            }), width="stretch", hide_index=True)
+    except Exception as e:
+        st.error(f"Erreur sur l'onglet Échéances : {e}")
 
 
 with tabs[5]:
