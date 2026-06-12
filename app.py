@@ -194,7 +194,7 @@ with tabs[0]:
                  7:"Jul",8:"Aoû",9:"Sep",10:"Oct",11:"Nov",12:"Déc"})
             fig = px.bar(s, x="Mois", y="nb", labels={"nb":"Marchés publiés"})
             fig.update_layout(height=300, margin=dict(l=0,r=0,t=10,b=0))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
         cols = st.columns(2)
         with cols[0]:
@@ -203,7 +203,7 @@ with tabs[0]:
             if not df.empty:
                 fig = px.pie(df, names="procedure", values="nb", hole=0.4)
                 fig.update_layout(height=320, margin=dict(l=0,r=0,t=10,b=0))
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
         with cols[1]:
             st.markdown("### Type d'acheteur")
             df = q.types_acheteurs(con, filters)
@@ -212,7 +212,7 @@ with tabs[0]:
                              labels={"nb":"Marchés","type":""})
                 fig.update_layout(height=320, margin=dict(l=0,r=0,t=10,b=0),
                                   yaxis={"categoryorder":"total ascending"})
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
 
 with tabs[1]:
@@ -234,7 +234,7 @@ with tabs[1]:
         rename = {"code":"CPV","libelle":"Libellé","nb":"Marchés",
                   "pct_mapa":"% MAPA","pct_ao":"% AO formel","pct_env":"% critère env."}
         st.dataframe(df[cols_show].rename(columns=rename),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
 
 
 with tabs[2]:
@@ -251,7 +251,7 @@ with tabs[2]:
             "siret":"SIRET","nom":"Nom","type":"Type",
             "nb_marches":"Marchés","nb_cpv":"Secteurs CPV",
             "nb_titulaires":"Titulaires distincts","dernier":"Dernier marché",
-        }), use_container_width=True, hide_index=True)
+        }), width="stretch", hide_index=True)
 
 
 with tabs[3]:
@@ -267,7 +267,7 @@ with tabs[3]:
             "siret":"SIRET","nom":"Nom","categorie":"Catégorie",
             "nb_marches_gagnes":"Marchés gagnés",
             "nb_acheteurs":"Acheteurs distincts","nb_cpv":"Secteurs CPV",
-        }), use_container_width=True, hide_index=True)
+        }), width="stretch", hide_index=True)
 
 
 with tabs[4]:
@@ -284,7 +284,7 @@ with tabs[4]:
             "fin":"Fin estimée","cpv_4":"CPV","cpv_libelle":"Secteur",
             "objet":"Objet","acheteur_nom":"Acheteur",
             "acheteur_type":"Type","departement":"Dép.",
-        }), use_container_width=True, hide_index=True)
+        }), width="stretch", hide_index=True)
 
 
 with tabs[5]:
@@ -315,7 +315,7 @@ with tabs[5]:
             "acheteur_nom":"Acheteur","acheteur_type":"Type",
             "departement":"Dép.","procedure":"Procédure",
             "offres_recues":"Offres",
-        }), use_container_width=True, hide_index=True)
+        }), width="stretch", hide_index=True)
         csv = df.to_csv(index=False).encode("utf-8")
         st.download_button("Télécharger ces résultats (CSV)", data=csv,
                            file_name="marches_filtres.csv", mime="text/csv")
