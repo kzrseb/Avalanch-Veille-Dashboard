@@ -156,23 +156,22 @@ filters = {
 }
 
 st.sidebar.markdown("---")
-with st.sidebar.expander("Sauvegarder cette recherche"):
-    save_name = st.text_input("Nom de la recherche", placeholder="ex: Espaces verts IDF")
-    save_email = st.text_input("Email pour les alertes hebdo",
-                                value=meta.get("default_email", ""))
-    if st.button("Enregistrer"):
-        if save_name and save_email:
-            con2 = db.connect()
-            con2.execute(
-                "INSERT INTO recherches_sauvegardees (id, nom, filtres_json, email) "
-                "VALUES (COALESCE((SELECT max(id) FROM recherches_sauvegardees), 0)+1, ?, ?, ?)",
-                (save_name, json.dumps(filters, ensure_ascii=False), save_email),
-            )
-            con2.close()
-            st.success(f"Recherche « {save_name} » enregistrée.")
-            st.cache_resource.clear()
+# Sauvegarde en session (le filesystem Streamlit Cloud est read-only, on ne peut
+# pas écrire dans la DB depuis l'app — les recherches sont gardées en mémoire
+# pour cette session ; pour persister, bookmark l'URL après "Copier l'URL").
+if "saved_searches" not in st.session_state:
+    st.session_state.saved_searches = []
+with st.sidebar.expander("💾 Sauvegarder cette recherche (session)"):
+    save_name = st.text_input("Nom", placeholder="ex: PME nettoyage IDF")
+    if st.button("Enregistrer en session"):
+        if save_name:
+            st.session_state.saved_searches.append({
+                "nom": save_name,
+                "filtres": dict(filters),
+            })
+            st.success(f"« {save_name} » enregistrée pour cette session.")
         else:
-            st.warning("Nom + email requis")
+            st.warning("Nom requis")
 
 
 # ----- Header -----
@@ -396,27 +395,32 @@ with tabs[5]:
 
 
 with tabs[6]:
-    st.markdown("### Mes recherches sauvegardées")
-    saved = con.execute("""
-        SELECT id, nom, filtres_json, email, created_at, last_alert_at
-        FROM recherches_sauvegardees ORDER BY id DESC
-    """).df()
-    if saved.empty:
-        st.info("Aucune recherche sauvegardée.")
+    st.markdown("### Mes recherches sauvegardées (session)")
+    st.caption(
+        "Les recherches sont gardées dans cette session. Pour persister durablement, "
+        "bookmark l'URL Streamlit avec tes filtres actifs (l'URL change selon les choix)."
+    )
+    saved = st.session_state.get("saved_searches", [])
+    if not saved:
+        st.info("Aucune recherche sauvegardée. Configure tes filtres puis utilise « 💾 Sauvegarder » dans la sidebar.")
     else:
-        for _, r in saved.iterrows():
-            cols = st.columns([6, 2, 2, 1])
+        for i, r in enumerate(saved):
+            cols = st.columns([6, 4, 1])
             with cols[0]:
-                st.markdown(f"**{r['nom']}** — {r['email']}")
+                st.markdown(f"**{r['nom']}**")
+                tags = []
+                f = r["filtres"]
+                if f.get("cpv_2"): tags.append(f"CPV {f['cpv_2']}")
+                if f.get("cpv_4"): tags.append(f"·{f['cpv_4']}")
+                if f.get("keyword"): tags.append(f"« {f['keyword']} »")
+                if f.get("departement"): tags.append(f"Dép. {','.join(f['departement']) if isinstance(f['departement'], list) else f['departement']}")
+                if f.get("categorie_titulaire"): tags.append(f"Cat. {','.join(f['categorie_titulaire'])}")
+                if tags: st.caption(" · ".join(tags))
             with cols[1]:
-                st.caption(f"Créée : {r['created_at']}")
+                st.caption(f"Min montant : {f.get('min_montant') or '—'} · Max : {f.get('max_montant') or '—'}")
             with cols[2]:
-                st.caption(f"Dernier mail : {r['last_alert_at'] or '—'}")
-            with cols[3]:
-                if st.button("Suppr.", key=f"del_{r['id']}"):
-                    con2 = db.connect()
-                    con2.execute("DELETE FROM recherches_sauvegardees WHERE id=?", (int(r["id"]),))
-                    con2.close()
+                if st.button("Suppr.", key=f"del_{i}"):
+                    st.session_state.saved_searches.pop(i)
                     st.rerun()
 
 
