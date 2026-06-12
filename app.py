@@ -247,9 +247,10 @@ with tabs[1]:
 
 
 with tabs[2]:
-    st.markdown("### Top 50 acheteurs (filtrés)")
+    st.markdown("### Top acheteurs (filtrés) — liste prospection")
     try:
-        df = q.top_acheteurs(con, filters, limit=50)
+        n_lim_a = st.slider("Nombre d'acheteurs à afficher", 50, 500, 100, step=50, key="n_ach")
+        df = q.top_acheteurs(con, filters, limit=n_lim_a)
         if df.empty:
             st.info("Aucun acheteur ne correspond aux filtres.")
         else:
@@ -262,14 +263,19 @@ with tabs[2]:
                 "nb_marches":"Marchés","nb_cpv":"Secteurs CPV",
                 "dernier":"Dernier marché",
             }), width="stretch", hide_index=True)
+            csv = df[["siret", "nom", "type", "nb_marches",
+                      "montant_total", "montant_moyen", "nb_cpv", "dernier"]].to_csv(index=False).encode("utf-8")
+            st.download_button("Exporter cette liste (CSV)", data=csv,
+                               file_name="prospection_acheteurs.csv", mime="text/csv")
     except Exception as e:
         st.error(f"Erreur sur l'onglet Acheteurs : {e}")
 
 
 with tabs[3]:
-    st.markdown("### Top 50 titulaires (gagnants)")
+    st.markdown("### Top titulaires (gagnants) — liste prospection")
     try:
-        df = q.top_titulaires(con, filters, limit=50)
+        n_lim = st.slider("Nombre de titulaires à afficher", 50, 500, 100, step=50)
+        df = q.top_titulaires(con, filters, limit=n_lim)
         if df.empty:
             st.info("Aucun titulaire ne correspond aux filtres.")
         else:
@@ -281,6 +287,11 @@ with tabs[3]:
                 "nb_marches_gagnes":"Marchés gagnés",
                 "nb_acheteurs":"Acheteurs distincts","nb_cpv":"Secteurs CPV",
             }), width="stretch", hide_index=True)
+            # Export CSV (pour CRM / LinkedIn / outreach)
+            csv = df[["siret", "nom", "categorie", "nb_marches_gagnes",
+                      "montant_total", "nb_acheteurs", "nb_cpv"]].to_csv(index=False).encode("utf-8")
+            st.download_button("Exporter cette liste (CSV)", data=csv,
+                               file_name="prospection_titulaires.csv", mime="text/csv")
     except Exception as e:
         st.error(f"Erreur sur l'onglet Titulaires : {e}")
 

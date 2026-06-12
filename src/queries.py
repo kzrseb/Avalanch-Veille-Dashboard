@@ -115,7 +115,9 @@ def par_cpv4(con, filters: dict | None = None, limit: int = 50) -> pd.DataFrame:
             substr(m.cpv_4, 1, 2) AS famille, count(*) AS nb,
             median(m.montant) AS montant_median, avg(m.montant) AS montant_moyen,
             sum(m.montant) AS montant_total, avg(m.duree_mois) AS duree_moyenne,
-            100.0*avg(CASE WHEN m.procedure='MAPA' THEN 1.0 ELSE 0 END) AS pct_mapa
+            100.0*avg(CASE WHEN m.procedure='MAPA' THEN 1.0 ELSE 0 END) AS pct_mapa,
+            100.0*avg(CASE WHEN m.procedure='AO_FORMEL' THEN 1.0 ELSE 0 END) AS pct_ao,
+            100.0*avg(CASE WHEN m.critere_env THEN 1.0 ELSE 0 END) AS pct_env
         FROM marches m LEFT JOIN cpv_labels c ON c.code = m.cpv_4 AND c.niveau = 4
         WHERE {where} AND m.cpv_4 IS NOT NULL
         GROUP BY m.cpv_4, c.libelle ORDER BY nb DESC LIMIT {limit}
