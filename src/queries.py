@@ -44,8 +44,25 @@ def _filter_clauses(f: dict | None, alias: str = "m") -> tuple[str, list]:
         parts.append(f"{a}objet ILIKE ?")
         params.append(f"%{f['keyword']}%")
     if f.get("departement"):
-        parts.append(f"{a}departement = ?")
-        params.append(f["departement"])
+        deps = f["departement"] if isinstance(f["departement"], (list, tuple)) else [f["departement"]]
+        deps = [d for d in deps if d]
+        if deps:
+            ph = ",".join(["?"] * len(deps))
+            parts.append(f"{a}departement IN ({ph})")
+            params.extend(deps)
+    if f.get("categorie_titulaire"):
+        # Le marché a au moins un titulaire dont la catégorie matche
+        cats = f["categorie_titulaire"]
+        cats = cats if isinstance(cats, (list, tuple)) else [cats]
+        cats = [c for c in cats if c]
+        if cats:
+            ph = ",".join(["?"] * len(cats))
+            parts.append(
+                f"EXISTS (SELECT 1 FROM titulaires_marche tmf "
+                f"INNER JOIN entreprises etf ON etf.siret = tmf.titulaire_id "
+                f"WHERE tmf.marche_id = {a}id AND etf.categorie IN ({ph}))"
+            )
+            params.extend(cats)
     if f.get("procedure"):
         parts.append(f"{a}procedure = ?")
         params.append(f["procedure"])
@@ -145,20 +162,54 @@ def top_acheteurs(con, filters: dict | None = None, limit: int = 50) -> pd.DataF
 
 
 def top_titulaires(con, filters: dict | None = None, limit: int = 50) -> pd.DataFrame:
+    """Liste des titulaires avec score de potentiel prospect Avalanch.
+
+    Score = 30 si PME + 15 si ETI + 20 si secteur cible (nettoyage/sécurité/
+    espaces verts/transport) + min(20, nb_marches) + 10 si peu diversifié
+    (≤3 acheteurs) + 5 si actif récemment (dernier marché < 6 mois).
+    Max théorique : 100.
+    """
     where, params = _filter_clauses(filters)
+    # CPV cibles Avalanch : nettoyage, sécurité, espaces verts, transport, facility
+    # CPV cibles Avalanch : secteurs ICP
+    TARGET_CPV = ("9091", "9090", "7971", "7731", "7734",
+                  "5070", "5071", "5072", "6010", "6011", "6013", "6014")
+    target_ph = ",".join(["?"] * len(TARGET_CPV))
     return con.execute(f"""
-        SELECT tm.titulaire_id AS siret,
+        WITH agg AS (
+            SELECT tm.titulaire_id AS siret,
+                count(*) AS nb_marches_gagnes,
+                sum(m.montant) AS montant_total,
+                count(DISTINCT m.acheteur_id) AS nb_acheteurs,
+                count(DISTINCT m.cpv_4) AS nb_cpv,
+                max(m.date_publication) AS dernier_marche,
+                100.0*avg(CASE WHEN m.cpv_4 IN ({target_ph}) THEN 1.0 ELSE 0 END) AS pct_secteurs_cibles
+            FROM marches m INNER JOIN titulaires_marche tm ON tm.marche_id = m.id
+            WHERE {where} AND tm.titulaire_id IS NOT NULL
+            GROUP BY tm.titulaire_id
+        )
+        SELECT a.siret,
             COALESCE(e.nom, '(nom non enrichi)') AS nom,
             COALESCE(e.categorie, 'ND') AS categorie,
-            count(*) AS nb_marches_gagnes, sum(m.montant) AS montant_total,
-            count(DISTINCT m.acheteur_id) AS nb_acheteurs,
-            count(DISTINCT m.cpv_4) AS nb_cpv
-        FROM marches m INNER JOIN titulaires_marche tm ON tm.marche_id = m.id
-        LEFT JOIN entreprises e ON e.siret = tm.titulaire_id
-        WHERE {where} AND tm.titulaire_id IS NOT NULL
-        GROUP BY tm.titulaire_id, e.nom, e.categorie
-        ORDER BY nb_marches_gagnes DESC LIMIT {limit}
-    """, params).df()
+            a.nb_marches_gagnes, a.montant_total,
+            a.nb_acheteurs, a.nb_cpv, a.dernier_marche,
+            (
+                CASE COALESCE(e.categorie, 'ND')
+                    WHEN 'PME' THEN 50
+                    WHEN 'ETI' THEN 30
+                    ELSE 0
+                END
+                + CASE WHEN a.pct_secteurs_cibles >= 50 THEN 30
+                       WHEN a.pct_secteurs_cibles > 0 THEN 15
+                       ELSE 0 END
+                + CASE WHEN a.nb_marches_gagnes >= 3 THEN 20
+                       WHEN a.nb_marches_gagnes >= 1 THEN 10
+                       ELSE 0 END
+            ) AS score_prospect
+        FROM agg a
+        LEFT JOIN entreprises e ON e.siret = a.siret
+        ORDER BY score_prospect DESC, a.nb_marches_gagnes DESC LIMIT {limit}
+    """, list(TARGET_CPV) + params).df()
 
 
 def saisonnalite(con, filters: dict | None = None) -> pd.DataFrame:
@@ -206,6 +257,15 @@ def marches_list(con, filters: dict | None = None, limit: int = 200,
             m.date_publication, m.date_notification, m.date_fin_estimee,
             m.acheteur_id, {ACHETEUR_TYPE_SQL} AS acheteur_type,
             COALESCE(ea.nom, '(non enrichi)') AS acheteur_nom,
+            (SELECT COALESCE(et.nom, tm.titulaire_id)
+             FROM titulaires_marche tm
+             LEFT JOIN entreprises et ON et.siret = tm.titulaire_id
+             WHERE tm.marche_id = m.id LIMIT 1) AS titulaire_principal,
+            (SELECT COALESCE(et.categorie, 'ND')
+             FROM titulaires_marche tm
+             LEFT JOIN entreprises et ON et.siret = tm.titulaire_id
+             WHERE tm.marche_id = m.id LIMIT 1) AS titulaire_categorie,
+            (SELECT count(*) FROM titulaires_marche tm WHERE tm.marche_id = m.id) AS nb_titulaires,
             m.departement, m.offres_recues, m.critere_env
         FROM marches m
         LEFT JOIN cpv_labels c ON c.code = m.cpv_4 AND c.niveau = 4
@@ -223,6 +283,14 @@ def echeances(con, filters: dict | None = None, days: int = 183, limit: int = 50
             m.cpv_4, c.libelle AS cpv_libelle,
             m.acheteur_id, {ACHETEUR_TYPE_SQL} AS acheteur_type,
             COALESCE(ea.nom, '(non enrichi)') AS acheteur_nom,
+            (SELECT COALESCE(et.nom, tm.titulaire_id)
+             FROM titulaires_marche tm
+             LEFT JOIN entreprises et ON et.siret = tm.titulaire_id
+             WHERE tm.marche_id = m.id LIMIT 1) AS titulaire_sortant,
+            (SELECT COALESCE(et.categorie, 'ND')
+             FROM titulaires_marche tm
+             LEFT JOIN entreprises et ON et.siret = tm.titulaire_id
+             WHERE tm.marche_id = m.id LIMIT 1) AS titulaire_categorie,
             m.montant, m.departement
         FROM marches m
         LEFT JOIN cpv_labels c ON c.code = m.cpv_4 AND c.niveau = 4

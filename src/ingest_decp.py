@@ -89,7 +89,7 @@ MARCHES_COLS = [
 TIT_COLS = ["marche_id", "titulaire_id", "titulaire_type"]
 
 
-def ingest(src_path, *, window_days: int = 365, today=None) -> dict:
+def ingest(src_path, *, window_days: int = 730, today=None) -> dict:
     import pandas as pd
     today = today or date.today()
     since = today - timedelta(days=window_days)

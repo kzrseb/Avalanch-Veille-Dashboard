@@ -87,15 +87,38 @@ if cpv2:
         cpv4 = cpv4_pick.split(" ·")[0] if not cpv4_pick.startswith("— Tous") else None
 
 dep_df = con.execute("SELECT code, nom FROM departements ORDER BY code").df()
-dep_options = ["— Toute la France —"] + [f"{r.code} · {r.nom}" for r in dep_df.itertuples()]
-dep_pick = st.sidebar.selectbox("Département", dep_options, index=0)
-dep = dep_pick.split(" ·")[0] if dep_pick != "— Toute la France —" else None
+dep_labels = [f"{r.code} · {r.nom}" for r in dep_df.itertuples()]
+# Presets régionaux pratiques pour la prospection
+PRESETS = {
+    "Île-de-France (75-95)": ["75", "77", "78", "91", "92", "93", "94", "95"],
+    "Auvergne-Rhône-Alpes": ["01", "03", "07", "15", "26", "38", "42", "43", "63", "69", "73", "74"],
+    "Nouvelle-Aquitaine": ["16", "17", "19", "23", "24", "33", "40", "47", "64", "79", "86", "87"],
+    "Occitanie": ["09", "11", "12", "30", "31", "32", "34", "46", "48", "65", "66", "81", "82"],
+    "PACA": ["04", "05", "06", "13", "83", "84"],
+    "Hauts-de-France": ["02", "59", "60", "62", "80"],
+}
+preset = st.sidebar.selectbox("Région (preset rapide)", ["— Aucun —"] + list(PRESETS.keys()), index=0)
+if preset != "— Aucun —":
+    default_deps = [f"{c} · {dep_df[dep_df.code==c].nom.iloc[0]}" for c in PRESETS[preset]
+                    if c in dep_df.code.values]
+else:
+    default_deps = []
+deps_pick = st.sidebar.multiselect("Département(s)", dep_labels, default=default_deps)
+dep = [d.split(" ·")[0] for d in deps_pick] if deps_pick else None
 
 ach_types = ["— Tous —", "Commune", "Département", "Région", "EPCI",
              "Métropole / EPCI", "Syndicat / EPCI", "Hôpital / établ. public local",
              "État", "Établ. public national", "Autre"]
 ach_pick = st.sidebar.selectbox("Type d'acheteur", ach_types, index=0)
 type_acheteur = None if ach_pick == "— Tous —" else ach_pick
+
+# Catégorie titulaire (PME/ETI/GE) — filtre puissant pour la prospection Avalanch
+cat_titulaire = st.sidebar.multiselect(
+    "Catégorie titulaire (PME = cible Avalanch)",
+    ["PME", "ETI", "GE", "ND"],
+    default=[],
+    help="Filtre les marchés dont au moins un titulaire est de la catégorie sélectionnée.",
+)
 
 proc_pick = st.sidebar.selectbox(
     "Procédure", ["— Toutes —", "MAPA", "AO_FORMEL", "GRE_A_GRE", "AUTRE"], index=0
@@ -129,6 +152,7 @@ filters = {
     "max_montant": mt_max if mt_max > 0 else None,
     "active_only": active_only,
     "date_min": date_min, "date_max": date_max,
+    "categorie_titulaire": cat_titulaire or None,
 }
 
 st.sidebar.markdown("---")
@@ -244,6 +268,9 @@ with tabs[1]:
                   "pct_mapa":"% MAPA","pct_ao":"% AO formel","pct_env":"% critère env."}
         st.dataframe(df[cols_show].rename(columns=rename),
                      width="stretch", hide_index=True)
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button("Exporter cette analyse CPV (CSV)", data=csv,
+                           file_name="analyse_cpv.csv", mime="text/csv")
 
 
 with tabs[2]:
@@ -272,7 +299,11 @@ with tabs[2]:
 
 
 with tabs[3]:
-    st.markdown("### Top titulaires (gagnants) — liste prospection")
+    st.markdown("### Titulaires — liste prospection (scorée pour Avalanch)")
+    st.caption(
+        "Score sur 100 = PME/ETI + secteur cible (nettoyage, sécurité, espaces verts, "
+        "transport, facility) + activité + peu diversifié + récent. Trié décroissant."
+    )
     try:
         n_lim = st.slider("Nombre de titulaires à afficher", 50, 500, 100, step=50)
         df = q.top_titulaires(con, filters, limit=n_lim)
@@ -280,18 +311,20 @@ with tabs[3]:
             st.info("Aucun titulaire ne correspond aux filtres.")
         else:
             df["Montant total gagné"] = df["montant_total"].apply(fmt_eur)
-            show = ["siret", "nom", "categorie", "nb_marches_gagnes",
-                    "Montant total gagné", "nb_acheteurs", "nb_cpv"]
+            show = ["score_prospect", "siret", "nom", "categorie",
+                    "nb_marches_gagnes", "Montant total gagné",
+                    "nb_acheteurs", "nb_cpv", "dernier_marche"]
             st.dataframe(df[show].rename(columns={
+                "score_prospect":"Score /100",
                 "siret":"SIRET","nom":"Nom","categorie":"Catégorie",
                 "nb_marches_gagnes":"Marchés gagnés",
                 "nb_acheteurs":"Acheteurs distincts","nb_cpv":"Secteurs CPV",
+                "dernier_marche":"Dernier marché",
             }), width="stretch", hide_index=True)
-            # Export CSV (pour CRM / LinkedIn / outreach)
-            csv = df[["siret", "nom", "categorie", "nb_marches_gagnes",
-                      "montant_total", "nb_acheteurs", "nb_cpv"]].to_csv(index=False).encode("utf-8")
+            csv = df[["score_prospect", "siret", "nom", "categorie", "nb_marches_gagnes",
+                      "montant_total", "nb_acheteurs", "nb_cpv", "dernier_marche"]].to_csv(index=False).encode("utf-8")
             st.download_button("Exporter cette liste (CSV)", data=csv,
-                               file_name="prospection_titulaires.csv", mime="text/csv")
+                               file_name="prospection_titulaires_avalanch.csv", mime="text/csv")
     except Exception as e:
         st.error(f"Erreur sur l'onglet Titulaires : {e}")
 
@@ -306,12 +339,20 @@ with tabs[4]:
         else:
             df["Montant"] = df["montant"].apply(fmt_eur)
             show = ["fin", "cpv_4", "cpv_libelle", "objet",
-                    "acheteur_nom", "acheteur_type", "departement", "Montant"]
+                    "acheteur_nom", "acheteur_type",
+                    "titulaire_sortant", "titulaire_categorie",
+                    "departement", "Montant"]
             st.dataframe(df[show].rename(columns={
                 "fin":"Fin estimée","cpv_4":"CPV","cpv_libelle":"Secteur",
                 "objet":"Objet","acheteur_nom":"Acheteur",
-                "acheteur_type":"Type","departement":"Dép.",
+                "acheteur_type":"Type acheteur",
+                "titulaire_sortant":"Titulaire sortant",
+                "titulaire_categorie":"Cat. titulaire",
+                "departement":"Dép.",
             }), width="stretch", hide_index=True)
+            csv = df.to_csv(index=False).encode("utf-8")
+            st.download_button("Exporter ces échéances (CSV)", data=csv,
+                               file_name="marches_echeances.csv", mime="text/csv")
     except Exception as e:
         st.error(f"Erreur sur l'onglet Échéances : {e}")
 
@@ -336,12 +377,16 @@ with tabs[5]:
         df["Montant"] = df["montant"].apply(fmt_eur)
         df["Durée"] = df["duree_mois"].apply(lambda x: fmt_num(x, " m"))
         show = ["date_publication", "objet", "cpv_4", "cpv_libelle",
-                "acheteur_nom", "acheteur_type", "departement", "Montant",
-                "Durée", "procedure", "offres_recues"]
+                "acheteur_nom", "acheteur_type", "titulaire_principal",
+                "titulaire_categorie", "nb_titulaires",
+                "departement", "Montant", "Durée", "procedure", "offres_recues"]
         st.dataframe(df[show].rename(columns={
             "date_publication":"Publié le","objet":"Objet",
             "cpv_4":"CPV","cpv_libelle":"Secteur",
-            "acheteur_nom":"Acheteur","acheteur_type":"Type",
+            "acheteur_nom":"Acheteur","acheteur_type":"Type acheteur",
+            "titulaire_principal":"Titulaire gagnant",
+            "titulaire_categorie":"Cat. titulaire",
+            "nb_titulaires":"Nb titulaires",
             "departement":"Dép.","procedure":"Procédure",
             "offres_recues":"Offres",
         }), width="stretch", hide_index=True)
