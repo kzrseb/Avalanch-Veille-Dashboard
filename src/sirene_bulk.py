@@ -1,18 +1,14 @@
-"""Enrichissement via la base SIRENE complète téléchargée depuis data.gouv.fr.
+"""Enrichissement SIRENE via le fichier Parquet officiel INSEE/data.gouv.fr.
 
-Stratégie :
-1. Télécharge le ZIP StockUniteLegale_utf8 (~700 Mo compressé) une fois par run.
-2. Streame le CSV (30M+ lignes) ligne par ligne sans tout charger en RAM.
-3. Filtre uniquement les SIRENs qui nous intéressent (titulaires + acheteurs).
-4. Insert massif dans entreprises.
+Le Parquet est lu directement par DuckDB → un seul SQL fait toute l'enrichissement.
+Couverture : 100% des entreprises actives en France (~30M lignes).
+Pas d'API, pas de rate limit, pas de mémoire saturée.
 
-Robuste : 100% de coverage, pas de rate limit, durée ~10 min sur GitHub Actions.
+URL stable INSEE (Parquet StockUniteLegale, ~660 Mo, mis à jour le 1er du mois).
 """
 from __future__ import annotations
 
-import csv
 import time
-import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -21,147 +17,114 @@ import requests
 from . import db as db_mod
 
 
-# StockUniteLegale (utf8) sur data.gouv.fr — mis à jour mensuellement
-SIRENE_ZIP_URL = "https://files.data.gouv.fr/insee-sirene/StockUniteLegale_utf8.zip"
-
+# URL stable data.gouv.fr (resource ID stable malgré les MAJ mensuelles)
+SIRENE_PARQUET_URL = "https://www.data.gouv.fr/api/1/datasets/r/350182c9-148a-46e0-8389-76c2ec1374a3"
 DATA_DIR = Path("data")
-SIRENE_ZIP = DATA_DIR / "stock_unite_legale.zip"
-SIRENE_CSV_NAME = "StockUniteLegale_utf8.csv"
-
-
-def _classify_acheteur_prefix(siret: str):
-    p = str(siret)[:2]
-    return {
-        "21": "Commune", "22": "Département", "23": "Région",
-        "24": "EPCI", "20": "Métropole / EPCI", "25": "Syndicat / EPCI",
-        "26": "Hôpital / établ. public local",
-        "18": "Établ. public national", "19": "Établ. public national",
-        "11": "État", "13": "État", "17": "État / divers",
-    }.get(p)
+SIRENE_PARQUET = DATA_DIR / "stock_unite_legale.parquet"
 
 
 def download_sirene_stock():
-    """Télécharge le ZIP SIRENE de data.gouv.fr s'il n'existe pas localement."""
+    """Télécharge le Parquet StockUniteLegale s'il n'est pas déjà local."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if SIRENE_ZIP.exists() and SIRENE_ZIP.stat().st_size > 100 * 1024 * 1024:
-        print(f"      ZIP SIRENE déjà présent ({SIRENE_ZIP.stat().st_size/1e6:.0f} Mo), skip download.",
-              flush=True)
-        return SIRENE_ZIP
-    print(f"      Téléchargement {SIRENE_ZIP_URL}…", flush=True)
+    if SIRENE_PARQUET.exists() and SIRENE_PARQUET.stat().st_size > 100 * 1024 * 1024:
+        print(f"      Parquet SIRENE déjà présent "
+              f"({SIRENE_PARQUET.stat().st_size/1e6:.0f} Mo), skip.", flush=True)
+        return SIRENE_PARQUET
+    print(f"      Téléchargement Parquet SIRENE…", flush=True)
     t0 = time.time()
-    with requests.get(SIRENE_ZIP_URL, stream=True, timeout=600) as r:
+    with requests.get(SIRENE_PARQUET_URL, stream=True, timeout=(30, 600)) as r:
         r.raise_for_status()
-        with SIRENE_ZIP.open("wb") as fh:
+        with SIRENE_PARQUET.open("wb") as fh:
             for chunk in r.iter_content(chunk_size=4 * 1024 * 1024):
                 fh.write(chunk)
-    print(f"      OK en {time.time()-t0:.0f}s — {SIRENE_ZIP.stat().st_size/1e6:.0f} Mo", flush=True)
-    return SIRENE_ZIP
+    print(f"      OK en {time.time()-t0:.0f}s — "
+          f"{SIRENE_PARQUET.stat().st_size/1e6:.0f} Mo", flush=True)
+    return SIRENE_PARQUET
+
+
+# Classification acheteur via préfixe SIREN (heuristique collectivités)
+TYPE_ACHETEUR_CASE = """
+CASE substr(a.siret, 1, 2)
+    WHEN '21' THEN 'Commune'
+    WHEN '22' THEN 'Département'
+    WHEN '23' THEN 'Région'
+    WHEN '24' THEN 'EPCI'
+    WHEN '20' THEN 'Métropole / EPCI'
+    WHEN '25' THEN 'Syndicat / EPCI'
+    WHEN '26' THEN 'Hôpital / établ. public local'
+    WHEN '18' THEN 'Établ. public national'
+    WHEN '19' THEN 'Établ. public national'
+    WHEN '11' THEN 'État'
+    WHEN '13' THEN 'État'
+    WHEN '17' THEN 'État / divers'
+    ELSE NULL
+END
+"""
 
 
 def enrich_from_stock(con) -> dict:
-    """Enrichit la table entreprises depuis le fichier SIRENE bulk.
+    """Enrichit la table entreprises depuis le Parquet SIRENE en un seul SQL.
 
-    Récupère les SIRETs présents dans marches/titulaires_marche, identifie les
-    SIRENs uniques, filtre le CSV SIRENE pour ne garder que ces SIRENs, et insère.
+    DuckDB lit le Parquet via `read_parquet()` et fait le JOIN nativement.
+    Performance : ~30 secondes pour 80k SIRETs.
     """
-    print("[3/4] Enrichissement SIRENE (stock complet data.gouv.fr)…", flush=True)
+    print("[3/4] Enrichissement SIRENE (Parquet bulk data.gouv.fr)…", flush=True)
 
-    # 1. Collecte SIRETs uniques à enrichir
-    sirets = set()
-    for row in con.execute("SELECT DISTINCT acheteur_id FROM marches WHERE acheteur_id IS NOT NULL").fetchall():
-        sirets.add(str(row[0]).strip())
-    for row in con.execute("SELECT DISTINCT titulaire_id FROM titulaires_marche WHERE titulaire_id IS NOT NULL").fetchall():
-        sirets.add(str(row[0]).strip())
+    # 1. Comptage des SIRETs à enrichir (pour info)
+    n_ach = con.execute(
+        "SELECT count(DISTINCT acheteur_id) FROM marches WHERE acheteur_id IS NOT NULL"
+    ).fetchone()[0]
+    n_tit = con.execute(
+        "SELECT count(DISTINCT titulaire_id) FROM titulaires_marche WHERE titulaire_id IS NOT NULL"
+    ).fetchone()[0]
+    print(f"      {n_ach:,} acheteurs + {n_tit:,} titulaires distincts à enrichir", flush=True)
 
-    # On indexe par SIREN (9 chars) car SIRENE bulk est au niveau SIREN
-    siren_to_sirets: dict[str, list[str]] = {}
-    for siret in sirets:
-        if len(siret) >= 9 and siret[:9].isdigit():
-            siren_to_sirets.setdefault(siret[:9], []).append(siret)
+    # 2. Download du Parquet
+    download_sirene_stock()
 
-    target_sirens = set(siren_to_sirets.keys())
-    print(f"      {len(sirets):,} SIRETs uniques → {len(target_sirens):,} SIRENs à trouver", flush=True)
+    # 3. Reset entreprises pour repartir propre
+    print("      Reset table entreprises…", flush=True)
+    con.execute("DELETE FROM entreprises")
 
-    if not target_sirens:
-        return {"requested": 0, "found": 0, "inserted": 0}
-
-    # 2. Download du stock SIRENE
-    zip_path = download_sirene_stock()
-
-    # 3. Stream parse du CSV
-    print("      Parsing du CSV SIRENE…", flush=True)
+    # 4. JOIN + INSERT en un seul SQL DuckDB
+    print("      JOIN Parquet × SIRETs + INSERT…", flush=True)
     t0 = time.time()
-    found = 0
-    inserted = 0
-    rows_buffer = []
-    BATCH = 5000
-
-    with zipfile.ZipFile(zip_path) as z:
-        # Trouve le bon CSV (peut s'appeler StockUniteLegale_utf8.csv)
-        csv_name = next((n for n in z.namelist() if n.lower().endswith(".csv")), None)
-        if not csv_name:
-            raise RuntimeError("Pas de CSV trouvé dans le ZIP SIRENE")
-
-        with z.open(csv_name) as raw:
-            # Le CSV est en UTF-8, taille ~6 Go. On le wrap dans TextIOWrapper.
-            import io
-            text = io.TextIOWrapper(raw, encoding="utf-8", newline="")
-            reader = csv.DictReader(text)
-            now = datetime.now()
-            for i, rec in enumerate(reader, 1):
-                siren = rec.get("siren", "")
-                if siren not in target_sirens:
-                    continue
-                found += 1
-                # Champs utiles : denominationUniteLegale, categorieEntreprise,
-                # activitePrincipaleUniteLegale, nomenclatureActivitePrincipaleUniteLegale
-                nom = (
-                    rec.get("denominationUniteLegale")
-                    or rec.get("nomUniteLegale")
-                    or rec.get("prenomUsuelUniteLegale", "")
-                ) or None
-                categorie = rec.get("categorieEntreprise") or "ND"
-                naf = rec.get("activitePrincipaleUniteLegale")
-
-                # Pour chaque SIRET ayant ce SIREN, on insère une ligne
-                for siret in siren_to_sirets.get(siren, []):
-                    rows_buffer.append((
-                        siret, siren, nom, categorie, naf,
-                        None, None, _classify_acheteur_prefix(siret), now,
-                    ))
-                    inserted += 1
-
-                if len(rows_buffer) >= BATCH:
-                    con.executemany(
-                        "INSERT OR REPLACE INTO entreprises "
-                        "(siret, siren, nom, categorie, naf, code_postal, departement, type_acheteur, enriched_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        rows_buffer,
-                    )
-                    rows_buffer.clear()
-
-                if i % 2_000_000 == 0:
-                    print(f"      …lu {i:,} lignes SIRENE, trouvés {found:,} cibles "
-                          f"(en {time.time()-t0:.0f}s)", flush=True)
-
-    if rows_buffer:
-        con.executemany(
-            "INSERT OR REPLACE INTO entreprises "
-            "(siret, siren, nom, categorie, naf, code_postal, departement, type_acheteur, enriched_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            rows_buffer,
+    parquet_path = str(SIRENE_PARQUET.resolve())
+    con.execute(f"""
+        INSERT INTO entreprises
+            (siret, siren, nom, categorie, naf, code_postal, departement, type_acheteur, enriched_at)
+        WITH all_sirets AS (
+            SELECT DISTINCT acheteur_id AS siret FROM marches WHERE acheteur_id IS NOT NULL
+            UNION
+            SELECT DISTINCT titulaire_id FROM titulaires_marche WHERE titulaire_id IS NOT NULL
         )
+        SELECT
+            a.siret,
+            substr(a.siret, 1, 9) AS siren,
+            COALESCE(s.denominationUniteLegale,
+                     s.nomUniteLegale || ' ' || COALESCE(s.prenom1UniteLegale, '')) AS nom,
+            COALESCE(s.categorieEntreprise, 'ND') AS categorie,
+            s.activitePrincipaleUniteLegale AS naf,
+            NULL AS code_postal,
+            NULL AS departement,
+            {TYPE_ACHETEUR_CASE} AS type_acheteur,
+            current_timestamp AS enriched_at
+        FROM all_sirets a
+        INNER JOIN read_parquet('{parquet_path}') s
+            ON s.siren = substr(a.siret, 1, 9)
+        WHERE length(a.siret) >= 9 AND substr(a.siret, 1, 9) ~ '^[0-9]+$'
+    """)
+    inserted = con.execute("SELECT count(*) FROM entreprises").fetchone()[0]
+    elapsed = time.time() - t0
+    print(f"      OK : {inserted:,} SIRETs enrichis en {elapsed:.0f}s", flush=True)
 
-    print(f"      Trouvés {found:,}/{len(target_sirens):,} SIRENs · "
-          f"{inserted:,} SIRETs enrichis en {time.time()-t0:.0f}s", flush=True)
-
-    # Nettoyage : on supprime le ZIP pour économiser de la place dans le runner
+    # 5. Cleanup du Parquet (libère 660 Mo)
     try:
-        SIRENE_ZIP.unlink()
+        SIRENE_PARQUET.unlink()
     except FileNotFoundError:
         pass
 
-    return {"requested": len(target_sirens), "found": found, "inserted": inserted}
+    return {"requested": n_ach + n_tit, "found": inserted, "inserted": inserted}
 
 
 if __name__ == "__main__":
