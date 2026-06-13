@@ -9,7 +9,7 @@ from pathlib import Path
 import requests
 
 from . import db as db_mod
-from . import ingest_decp, enrich_sirene, email_alerts
+from . import ingest_decp, enrich_sirene, email_alerts, sirene_bulk
 
 
 DECP_DATASET_URL = (
@@ -78,14 +78,22 @@ def main() -> int:
     stats = ingest_decp.ingest(DECP_LOCAL)
     print(f"      {stats['kept']:,} marchés conservés en {stats['total_s']}s", flush=True)
 
-    print("[3/4] Enrichissement SIRENE (top 15000 acheteurs + 15000 titulaires)…", flush=True)
+    # Plan B : SIRENE bulk (data.gouv.fr) — coverage 100% sans rate-limit API
     try:
         con = db_mod.connect()
-        es = enrich_sirene.enrich_top_actors(con, top_acheteurs=15000, top_titulaires=15000)
-        print(f"      {es['found']}/{es['requested']} SIRET enrichis", flush=True)
+        es = sirene_bulk.enrich_from_stock(con)
+        print(f"      Total enrichi : {es.get('inserted', 0):,} SIRETs", flush=True)
         con.close()
     except Exception as e:
-        print(f"[err] SIRENE : {e}", flush=True)
+        print(f"[err] SIRENE bulk : {e}", flush=True)
+        # Fallback : enrichissement API en cas d'échec du bulk
+        try:
+            con = db_mod.connect()
+            es = enrich_sirene.enrich_top_actors(con, top_acheteurs=3000, top_titulaires=3000)
+            print(f"      Fallback API : {es['found']}/{es['requested']} SIRET enrichis", flush=True)
+            con.close()
+        except Exception as ee:
+            print(f"[err] SIRENE fallback : {ee}", flush=True)
 
     print("[4/4] Envoi alertes mail…", flush=True)
     try:
