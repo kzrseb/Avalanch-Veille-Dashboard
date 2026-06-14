@@ -37,14 +37,11 @@ jobs:
         run: |
           python -m src.weekly_job
 
-      - name: Commit updated database
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/veille.duckdb
-          if ! git diff --staged --quiet; then
-            git commit -m "weekly update $(date -u +%Y-%m-%d)"
-            git push
-          else
-            echo "Pas de changement à committer"
-          fi
+      - name: Upload database to GitHub Releases (replace if exists)
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Veille DB (latest)"
+          tag_name: "latest-db"
+          body: "Base DuckDB générée le ${{ github.event.head_commit.timestamp }} — weekly update"
+          files: data/veille.duckdb
+          make_latest: true

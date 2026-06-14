@@ -1,7 +1,10 @@
 # Données téléchargées et bases locales
 data/decp-latest.json
+data/*.duckdb
 data/*.duckdb.wal
 data/*.duckdb.tmp
+data/*.parquet
+data/stock_unite_legale*
 *.pyc
 __pycache__/
 

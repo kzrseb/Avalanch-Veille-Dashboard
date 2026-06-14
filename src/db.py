@@ -5,7 +5,43 @@ import os
 from pathlib import Path
 import duckdb
 
-DB_PATH = Path(os.environ.get("VEILLE_DB", "data/veille.duckdb"))
+# URL du release "latest-db" — la DB est uploadée ici par le workflow weekly
+DB_RELEASE_URL = (
+    "https://github.com/kzrseb/Avalanch-Veille-Dashboard/releases/"
+    "download/latest-db/veille.duckdb"
+)
+
+
+def _resolve_db_path(read_only: bool) -> Path:
+    """Détermine où stocker/lire la DB.
+
+    - read_only=True (app Streamlit Cloud) : /tmp/veille.duckdb (le seul writable
+      sur Streamlit Cloud) ; téléchargée depuis le release.
+    - read_only=False (workflow GitHub Actions) : data/veille.duckdb (par défaut)
+      ou VEILLE_DB env var.
+    """
+    if read_only:
+        return Path("/tmp/veille.duckdb")
+    return Path(os.environ.get("VEILLE_DB", "data/veille.duckdb"))
+
+
+def ensure_db_downloaded(target: Path) -> None:
+    """Télécharge la DB depuis GitHub Releases si elle n'existe pas localement."""
+    if target.exists() and target.stat().st_size > 1_000_000:
+        return
+    import requests
+    target.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Téléchargement DB depuis {DB_RELEASE_URL}…", flush=True)
+    with requests.get(DB_RELEASE_URL, stream=True, timeout=(30, 600)) as r:
+        r.raise_for_status()
+        with target.open("wb") as fh:
+            for chunk in r.iter_content(chunk_size=4 * 1024 * 1024):
+                fh.write(chunk)
+    print(f"DB téléchargée : {target.stat().st_size/1e6:.0f} Mo", flush=True)
+
+
+# DB_PATH conservée pour compat ; pointe sur la version write par défaut (workflow)
+DB_PATH = _resolve_db_path(read_only=False)
 
 
 SCHEMA = """
@@ -83,10 +119,16 @@ CREATE TABLE IF NOT EXISTS meta (
 
 
 def connect(read_only: bool = False) -> duckdb.DuckDBPyConnection:
-    """Renvoie une connexion DuckDB, crée le fichier si besoin."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    con = duckdb.connect(str(DB_PATH), read_only=read_only)
-    return con
+    """Renvoie une connexion DuckDB. Télécharge la DB depuis GitHub Releases
+    si on est en read_only (= app Streamlit Cloud) et qu'elle n'existe pas."""
+    db_path = _resolve_db_path(read_only)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    if read_only:
+        try:
+            ensure_db_downloaded(db_path)
+        except Exception as e:
+            print(f"[warn] Téléchargement DB échoué : {e}", flush=True)
+    return duckdb.connect(str(db_path), read_only=read_only)
 
 
 def init_schema(con: duckdb.DuckDBPyConnection) -> None:
