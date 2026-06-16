@@ -23,11 +23,19 @@ st.set_page_config(
 
 @st.cache_resource
 def get_con():
-    return db.connect(read_only=True)
+    try:
+        return db.connect(read_only=True)
+    except Exception as e:
+        st.error(f"Connexion DB échouée : {e}")
+        st.stop()
 
 
 con = get_con()
-meta = q.meta(con)
+try:
+    meta = q.meta(con)
+except Exception as e:
+    st.error(f"Lecture meta échouée : {e}")
+    meta = {}
 
 
 def fmt_int(n) -> str:

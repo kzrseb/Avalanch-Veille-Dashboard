@@ -11,3 +11,7 @@ maxUploadSize = 50
 
 [browser]
 gatherUsageStats = false
+
+[client]
+# Affiche la stacktrace complète dans le navigateur au lieu de "Oh no" — diagnostic
+showErrorDetails = "full"
