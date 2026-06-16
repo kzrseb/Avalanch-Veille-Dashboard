@@ -301,12 +301,12 @@ with tabs[3]:
     st.markdown("### Titulaires — liste prospection (scorée pour Avalanch)")
     st.caption(
         "Score sur 100 = PME/ETI + secteur cible (nettoyage, sécurité, espaces verts, "
-        "transport, facility) + activité + peu diversifié + récent. Trié décroissant."
+        "transport, facility) + activité. Trié décroissant."
     )
     try:
         n_lim = st.slider("Nombre de titulaires à afficher", 50, 500, 100, step=50)
         df = q.top_titulaires(con, filters, limit=n_lim)
-        if df.empty:
+        if df is None or df.empty:
             st.info("Aucun titulaire ne correspond aux filtres.")
         else:
             df["Montant total gagné"] = df["montant_total"].apply(fmt_eur)

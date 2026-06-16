@@ -162,54 +162,52 @@ def top_acheteurs(con, filters: dict | None = None, limit: int = 50) -> pd.DataF
 
 
 def top_titulaires(con, filters: dict | None = None, limit: int = 50) -> pd.DataFrame:
-    """Liste des titulaires avec score de potentiel prospect Avalanch.
-
-    Score = 30 si PME + 15 si ETI + 20 si secteur cible (nettoyage/sécurité/
-    espaces verts/transport) + min(20, nb_marches) + 10 si peu diversifié
-    (≤3 acheteurs) + 5 si actif récemment (dernier marché < 6 mois).
-    Max théorique : 100.
-    """
-    where, params = _filter_clauses(filters)
-    # CPV cibles Avalanch : nettoyage, sécurité, espaces verts, transport, facility
-    # CPV cibles Avalanch : secteurs ICP
-    TARGET_CPV = ("9091", "9090", "7971", "7731", "7734",
-                  "5070", "5071", "5072", "6010", "6011", "6013", "6014")
-    target_ph = ",".join(["?"] * len(TARGET_CPV))
-    return con.execute(f"""
-        WITH agg AS (
-            SELECT tm.titulaire_id AS siret,
-                count(*) AS nb_marches_gagnes,
-                sum(m.montant) AS montant_total,
-                count(DISTINCT m.acheteur_id) AS nb_acheteurs,
-                count(DISTINCT m.cpv_4) AS nb_cpv,
-                max(m.date_publication) AS dernier_marche,
-                100.0*avg(CASE WHEN m.cpv_4 IN ({target_ph}) THEN 1.0 ELSE 0 END) AS pct_secteurs_cibles
-            FROM marches m INNER JOIN titulaires_marche tm ON tm.marche_id = m.id
-            WHERE {where} AND tm.titulaire_id IS NOT NULL
-            GROUP BY tm.titulaire_id
-        )
-        SELECT a.siret,
-            COALESCE(e.nom, '(nom non enrichi)') AS nom,
-            COALESCE(e.categorie, 'ND') AS categorie,
-            a.nb_marches_gagnes, a.montant_total,
-            a.nb_acheteurs, a.nb_cpv, a.dernier_marche,
-            (
-                CASE COALESCE(e.categorie, 'ND')
-                    WHEN 'PME' THEN 50
-                    WHEN 'ETI' THEN 30
-                    ELSE 0
-                END
-                + CASE WHEN a.pct_secteurs_cibles >= 50 THEN 30
-                       WHEN a.pct_secteurs_cibles > 0 THEN 15
-                       ELSE 0 END
-                + CASE WHEN a.nb_marches_gagnes >= 3 THEN 20
-                       WHEN a.nb_marches_gagnes >= 1 THEN 10
-                       ELSE 0 END
-            ) AS score_prospect
-        FROM agg a
-        LEFT JOIN entreprises e ON e.siret = a.siret
-        ORDER BY score_prospect DESC, a.nb_marches_gagnes DESC LIMIT {limit}
-    """, list(TARGET_CPV) + params).df()
+    """Liste des titulaires avec score de potentiel prospect Avalanch."""
+    try:
+        where, params = _filter_clauses(filters)
+        TARGET_CPV = ("9091", "9090", "7971", "7731", "7734",
+                      "5070", "5071", "5072", "6010", "6011", "6013", "6014")
+        target_ph = ",".join(["?"] * len(TARGET_CPV))
+        result = con.execute(f"""
+            WITH agg AS (
+                SELECT tm.titulaire_id AS siret,
+                    count(*) AS nb_marches_gagnes,
+                    sum(m.montant) AS montant_total,
+                    count(DISTINCT m.acheteur_id) AS nb_acheteurs,
+                    count(DISTINCT m.cpv_4) AS nb_cpv,
+                    max(m.date_publication) AS dernier_marche,
+                    100.0*avg(CASE WHEN m.cpv_4 IN ({target_ph}) THEN 1.0 ELSE 0 END) AS pct_secteurs_cibles
+                FROM marches m INNER JOIN titulaires_marche tm ON tm.marche_id = m.id
+                WHERE {where} AND tm.titulaire_id IS NOT NULL
+                GROUP BY tm.titulaire_id
+            )
+            SELECT a.siret,
+                COALESCE(e.nom, '(nom non enrichi)') AS nom,
+                COALESCE(e.categorie, 'ND') AS categorie,
+                a.nb_marches_gagnes, a.montant_total,
+                a.nb_acheteurs, a.nb_cpv, a.dernier_marche,
+                (
+                    CASE COALESCE(e.categorie, 'ND')
+                        WHEN 'PME' THEN 50
+                        WHEN 'ETI' THEN 30
+                        ELSE 0
+                    END
+                    + CASE WHEN a.pct_secteurs_cibles >= 50 THEN 30
+                           WHEN a.pct_secteurs_cibles > 0 THEN 15
+                           ELSE 0 END
+                    + CASE WHEN a.nb_marches_gagnes >= 3 THEN 20
+                           WHEN a.nb_marches_gagnes >= 1 THEN 10
+                           ELSE 0 END
+                ) AS score_prospect
+            FROM agg a
+            LEFT JOIN entreprises e ON e.siret = a.siret
+            ORDER BY score_prospect DESC, a.nb_marches_gagnes DESC LIMIT {limit}
+        """, list(TARGET_CPV) + params)
+        df = result.df() if result is not None else None
+        return df if df is not None else pd.DataFrame()
+    except Exception as e:
+        print(f"[top_titulaires error] {e}", flush=True)
+        return pd.DataFrame()
 
 
 def saisonnalite(con, filters: dict | None = None) -> pd.DataFrame:
